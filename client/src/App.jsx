@@ -89,6 +89,7 @@ function LanPong() {
 
   const wsRef = useRef(null);
   const isHostRef = useRef(false);
+  const readyRef = useRef(false);
 
   // Inputs
   const keysRef = useRef({ up: false, down: false });
@@ -99,6 +100,7 @@ function LanPong() {
   const gRef = useRef(null);
   const netStateRef = useRef(null);
   const pausedRef = useRef(false);
+  const countdownEndsAtRef = useRef(0);
   const [hint, setHint] = useState("Connect to a server and join a room.");
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -183,6 +185,19 @@ function LanPong() {
     };
   };
 
+  const startCountdown = () => {
+    countdownEndsAtRef.current = Date.now() + 3000;
+  };
+
+  const clearCountdown = () => {
+    countdownEndsAtRef.current = 0;
+  };
+
+  const getCountdownValue = (endsAt) => {
+    if (!endsAt) return 0;
+    return Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+  };
+
   const serializeState = (g) => {
     const challengeSnapshot = (c) => (c?.current ? {
       id: c.current.id,
@@ -229,6 +244,8 @@ function LanPong() {
         parryWindowUntil: g.parryWindowUntil,
       },
       t: Date.now(),
+      paused: pausedRef.current,
+      countdownEndsAt: countdownEndsAtRef.current,
     };
   };
 
@@ -466,6 +483,9 @@ function LanPong() {
       setPresence({ p1: false, p2: false });
       setHint("Disconnected.");
       wsRef.current = null;
+      readyRef.current = false;
+      pausedRef.current = false;
+      clearCountdown();
     };
 
     ws.onerror = () => {
@@ -491,12 +511,29 @@ function LanPong() {
 
       if (msg.type === "presence") {
         setPresence({ p1: !!msg.p1, p2: !!msg.p2 });
+        const ok = !!msg.p1 && !!msg.p2;
+        if (isHostRef.current) {
+          if (ok && !readyRef.current) {
+            startCountdown();
+            readyRef.current = true;
+          } else if (!ok) {
+            readyRef.current = false;
+          }
+        }
         return;
       }
 
       if (msg.type === "can_start") {
-        if (msg.ok) setHint(isHost ? "Both players connected. Game live." : "Both players connected.");
-        else setHint("Waiting for both players…");
+        if (msg.ok) {
+          setHint(isHost ? "Both players connected. Get ready…" : "Both players connected.");
+          if (isHostRef.current && !readyRef.current) {
+            startCountdown();
+            readyRef.current = true;
+          }
+        } else {
+          setHint("Waiting for both players…");
+          readyRef.current = false;
+        }
         return;
       }
 
@@ -519,6 +556,12 @@ function LanPong() {
         return;
       }
 
+      if (msg.type === "control") {
+        if (!isHostRef.current) return;
+        applyControlAction(msg.action);
+        return;
+      }
+
       if (msg.type === "state") {
         netStateRef.current = msg;
         return;
@@ -528,6 +571,37 @@ function LanPong() {
 
   const disconnect = () => {
     wsRef.current?.close();
+  };
+
+  const applyControlAction = (action) => {
+    if (!action) return;
+    if (action === "toggle_pause") {
+      if (pausedRef.current) {
+        pausedRef.current = false;
+        startCountdown();
+      } else {
+        pausedRef.current = true;
+        clearCountdown();
+      }
+      return;
+    }
+    if (action === "reset") {
+      gRef.current = makeInitial();
+      pausedRef.current = false;
+      startCountdown();
+    }
+  };
+
+  const sendControl = (action) => {
+    if (!player) return;
+    if (isHostRef.current) {
+      applyControlAction(action);
+      return;
+    }
+    const ws = wsRef.current;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: "control", action }));
+    }
   };
 
   // Key input: local player only
@@ -550,7 +624,10 @@ function LanPong() {
       const k = e.key;
       if (k === " " || k === "Spacebar") {
         e.preventDefault();
-        pausedRef.current = !pausedRef.current;
+        sendControl("toggle_pause");
+      }
+      if (k === "r" || k === "R") {
+        sendControl("reset");
       }
       if (k === "e" || k === "E") {
         sendInstantInput({ action: true });
@@ -911,6 +988,8 @@ function LanPong() {
 
     const draw = (g, overlayText = "") => {
       const now = performance.now();
+      const countdownValue = getCountdownValue(g.countdownEndsAt);
+      const isPaused = !!g.paused;
       const trail = g.trail || [];
       const particles = g.particles || [];
       const localSide = player === 1 ? "L" : player === 2 ? "R" : null;
@@ -1059,13 +1138,21 @@ function LanPong() {
         }
       }
 
-      if (pausedRef.current) {
+      if (isPaused) {
         ctx.fillStyle = "rgba(0,0,0,0.40)";
         ctx.fillRect(0, 0, cfg.w, cfg.h);
         ctx.fillStyle = "rgba(231,236,255,0.95)";
         ctx.font = "900 44px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
         ctx.textAlign = "center";
         ctx.fillText("PAUSED", cfg.w / 2, cfg.h / 2);
+      }
+      if (!isPaused && countdownValue > 0) {
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillRect(0, 0, cfg.w, cfg.h);
+        ctx.fillStyle = "rgba(231,236,255,0.98)";
+        ctx.font = "900 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+        ctx.textAlign = "center";
+        ctx.fillText(String(countdownValue), cfg.w / 2, cfg.h / 2 + 10);
       }
       if (g.winner) {
         ctx.fillStyle = "rgba(0,0,0,0.50)";
@@ -1074,6 +1161,9 @@ function LanPong() {
         ctx.font = "900 46px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
         ctx.textAlign = "center";
         ctx.fillText(g.winner === "L" ? "LEFT WINS" : "RIGHT WINS", cfg.w / 2, cfg.h / 2);
+        ctx.font = "500 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+        ctx.fillStyle = "rgba(231,236,255,0.78)";
+        ctx.fillText("Press R to restart", cfg.w / 2, cfg.h / 2 + 34);
       }
     };
 
@@ -1096,23 +1186,29 @@ function LanPong() {
         if (!g.tPrev) g.tPrev = now;
         const dt = Math.min((now - g.tPrev) / 1000, g.dtClamp);
         g.tPrev = now;
+        if (countdownEndsAtRef.current && Date.now() >= countdownEndsAtRef.current) {
+          clearCountdown();
+        }
+        const countdownActive = countdownEndsAtRef.current > Date.now();
 
         // only run if both players connected
-        if (presence.p1 && presence.p2 && !pausedRef.current && !g.winner) {
+        if (presence.p1 && presence.p2 && !pausedRef.current && !g.winner && !countdownActive) {
           updateHost(g, dt, now);
         }
 
         // broadcast state ~60fps (this loop runs ~60)
         ws.send(JSON.stringify({ type: "state", ...serializeState(g) }));
 
-        draw(g, `Room: ${room} • You: P${player} ${isHost ? "(host)" : ""} • Controls: W/S or ↑/↓`);
+        const renderState = { ...g, paused: pausedRef.current, countdownEndsAt: countdownEndsAtRef.current };
+        draw(renderState, `Room: ${room} • You: P${player} ${isHost ? "(host)" : ""} • Controls: W/S or ↑/↓`);
         return;
       }
 
       // guest: render received net state (no sim)
       const s = netStateRef.current;
       const rg = applyNetStateToRender(s) || gRef.current || makeInitial();
-      draw(rg, `Room: ${room} • You: P${player} • Waiting for host state…`);
+      const countdownEndsAt = s?.countdownEndsAt || 0;
+      draw({ ...rg, paused: !!s?.paused, countdownEndsAt }, `Room: ${room} • You: P${player} • Waiting for host state…`);
     };
 
     rafRef.current = requestAnimationFrame(step);
@@ -1170,7 +1266,7 @@ function LanPong() {
       </div>
 
       <div style={{ marginTop: 10, opacity: 0.75, fontSize: 13 }}>
-            Controls: {player ? "W/S or ↑/↓" : "—"} • Action: E • Powerups: 1-4 • Space toggles local pause (host pauses simulation)
+            Controls: {player ? "W/S or ↑/↓" : "—"} • Action: E • Powerups: 1-4 • Space pauses (either player) • R restart
       </div>
     </div>
   );
