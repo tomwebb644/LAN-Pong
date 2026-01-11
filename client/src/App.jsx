@@ -293,14 +293,10 @@ function LanPong() {
         },
         onAction: (g, side) => {
           const paddle = side === "L" ? g.left : g.right;
-          const inbound = side === "L" ? g.ball.vx < -60 : g.ball.vx > 60;
-          const near = side === "L" ? g.ball.x < cfg.w * 0.28 : g.ball.x > cfg.w * 0.72;
           const elapsed = performance.now() - g.challenges[side].actionPulseAt;
           return (
             g.challenges[side].actionPulseAt > 0 &&
             elapsed < 500 &&
-            inbound &&
-            near &&
             Math.abs(g.ball.y - (paddle.y + cfg.paddleH / 2)) < 120
           );
         },
@@ -1502,14 +1498,10 @@ function SingleplayerPong() {
         },
         onAction: (g) => {
           // succeed if the prompt is active and ball is truly near
-          const inbound = g.ball.vx < -60;
-          const near = g.ball.x < cfg.w * 0.28;
           const elapsed = performance.now() - g.actionPulseAt;
           return (
             g.actionPulseAt > 0 &&
             elapsed < 500 &&
-            inbound &&
-            near &&
             Math.abs(g.ball.y - (g.left.y + (cfg.paddleH * g.leftScale) / 2)) < 120
           );
         },
