@@ -280,22 +280,25 @@ function LanPong() {
           g.challenges[side].actionPulseAt = 0;
         },
         tick: (g, side) => {
-          const inbound = side === "L" ? g.ball.vx < -80 : g.ball.vx > 80;
+          const inbound = side === "L" ? g.ball.vx < -60 : g.ball.vx > 60;
           const near = side === "L" ? g.ball.x < cfg.w * 0.28 : g.ball.x > cfg.w * 0.72;
           const prompt = inbound && near;
           if (prompt && g.challenges[side].actionPulseAt === 0) {
             g.challenges[side].actionPulseAt = performance.now();
           }
-          if (!prompt) g.challenges[side].actionPulseAt = 0;
+          if (!prompt && g.challenges[side].actionPulseAt > 0) {
+            const elapsed = performance.now() - g.challenges[side].actionPulseAt;
+            if (elapsed > 500) g.challenges[side].actionPulseAt = 0;
+          }
         },
         onAction: (g, side) => {
           const paddle = side === "L" ? g.left : g.right;
-          const ok =
+          const elapsed = performance.now() - g.challenges[side].actionPulseAt;
+          return (
             g.challenges[side].actionPulseAt > 0 &&
-            (side === "L" ? g.ball.vx < -80 : g.ball.vx > 80) &&
-            (side === "L" ? g.ball.x < cfg.w * 0.24 : g.ball.x > cfg.w * 0.76) &&
-            Math.abs(g.ball.y - (paddle.y + cfg.paddleH / 2)) < 110;
-          return ok;
+            elapsed < 500 &&
+            Math.abs(g.ball.y - (paddle.y + cfg.paddleH / 2)) < 120
+          );
         },
       },
       {
@@ -433,7 +436,7 @@ function LanPong() {
         x: cfg.w / 2,
         y: clamp(g.ball.y, 80, cfg.h - 80),
         until: now + 5200,
-        strength: 520,
+        strength: 18000,
       };
       p.cooldownUntil = now + 6500;
       spawnPop(g, cfg.w / 2, g.gravity[side].y, 18);
@@ -829,10 +832,10 @@ function LanPong() {
         if (well && now < well.until) {
           const dx = well.x - g.ball.x;
           const dy = well.y - g.ball.y;
-          const dist = Math.max(60, Math.hypot(dx, dy));
-          const pull = (well.strength / dist) * dt;
-          g.ball.vy += dy * pull * 0.012;
-          g.ball.vx += dx * pull * 0.006;
+          const dist = Math.max(40, Math.hypot(dx, dy));
+          const pull = (well.strength / (dist * dist)) * dt;
+          g.ball.vx += dx * pull;
+          g.ball.vy += dy * pull;
         }
       });
 
@@ -1077,7 +1080,8 @@ function LanPong() {
       ["L", "R"].forEach((side) => {
         const ghost = g.ghostBall?.[side];
         if (ghost && now < ghost.until) {
-          ctx.fillStyle = "rgba(231,236,255,0.22)";
+          const isLocalGhost = localSide && side === localSide;
+          ctx.fillStyle = isLocalGhost ? "rgba(231,236,255,0.22)" : "#e7ecff";
           ctx.beginPath();
           ctx.arc(ghost.x, ghost.y, cfg.ballR, 0, Math.PI * 2);
           ctx.fill();
@@ -1127,7 +1131,7 @@ function LanPong() {
       ctx.fillText(overlayText, 18, cfg.h - 16);
 
       if (localChallenge?.id === "actionTiming" && localSide) {
-        const inbound = localSide === "L" ? g.ball.vx < -80 : g.ball.vx > 80;
+        const inbound = localSide === "L" ? g.ball.vx < -60 : g.ball.vx > 60;
         const near = localSide === "L" ? g.ball.x < cfg.w * 0.28 : g.ball.x > cfg.w * 0.72;
         if (inbound && near) {
           ctx.fillStyle = "rgba(231,236,255,0.9)";
@@ -1480,23 +1484,26 @@ function SingleplayerPong() {
         },
         tick: (g) => {
           // show prompt when ball is inbound and close-ish
-          const inbound = g.ball.vx < -80;
+          const inbound = g.ball.vx < -60;
           const near = g.ball.x < cfg.w * 0.28;
           const prompt = inbound && near;
           if (prompt && g.actionPulseAt === 0) {
             g.actionPulseAt = performance.now();
           }
           // if ball moves away, reset prompt
-          if (!prompt) g.actionPulseAt = 0;
+          if (!prompt && g.actionPulseAt > 0) {
+            const elapsed = performance.now() - g.actionPulseAt;
+            if (elapsed > 500) g.actionPulseAt = 0;
+          }
         },
         onAction: (g) => {
           // succeed if the prompt is active and ball is truly near
-          const ok =
+          const elapsed = performance.now() - g.actionPulseAt;
+          return (
             g.actionPulseAt > 0 &&
-            g.ball.vx < -80 &&
-            g.ball.x < cfg.w * 0.24 &&
-            Math.abs(g.ball.y - (g.left.y + (cfg.paddleH * g.leftScale) / 2)) < 110;
-          return ok;
+            elapsed < 500 &&
+            Math.abs(g.ball.y - (g.left.y + (cfg.paddleH * g.leftScale) / 2)) < 120
+          );
         },
       },
       {
@@ -1656,7 +1663,7 @@ function SingleplayerPong() {
         x: cfg.w / 2,
         y: clamp(g.ball.y, 80, cfg.h - 80),
         until: now + 5200,
-        strength: 520,
+        strength: 18000,
       };
       p.cooldownUntil = now + 6500;
       spawnPop(g, cfg.w / 2, g.gravity.y, 18);
@@ -2175,11 +2182,10 @@ function SingleplayerPong() {
       if (g.gravity && now < g.gravity.until) {
         const dx = g.gravity.x - g.ball.x;
         const dy = g.gravity.y - g.ball.y;
-        const dist = Math.max(60, Math.hypot(dx, dy));
-        // strongest near the well
-        const pull = (g.gravity.strength / dist) * dt;
-        g.ball.vy += dy * pull * 0.012;
-        g.ball.vx += dx * pull * 0.006;
+        const dist = Math.max(40, Math.hypot(dx, dy));
+        const pull = (g.gravity.strength / (dist * dist)) * dt;
+        g.ball.vx += dx * pull;
+        g.ball.vy += dy * pull;
       }
 
       // Collisions
