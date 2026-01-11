@@ -11,7 +11,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  */
 
 export default function App() {
-  const [tab, setTab] = useState("single"); // "multiplayer" | "single"
+  const [tab, setTab] = useState("multiplayer"); // "multiplayer" | "single"
   return (
     <div style={{ minHeight: "100vh", padding: 18, display: "flex", justifyContent: "center" }}>
       <div style={{ width: "100%", maxWidth: 1060 }}>
@@ -72,6 +72,7 @@ function LanPong() {
     scoreToWin: 9,
     rallyAccelPerSec: 0.02,
     maxSpeedLiftPerSec: 6,
+    powerupChargeMax: 3,
     bg: "#0b1020",
   }), []);
 
@@ -101,6 +102,230 @@ function LanPong() {
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+  const localSide = player === 1 ? "L" : player === 2 ? "R" : null;
+
+  const setHintForSide = (side, text) => {
+    if (side === localSide) setHint(text);
+  };
+
+  const challengePool = useMemo(
+    () => [
+      {
+        id: "actionTiming",
+        title: "Reflex Test",
+        text: "Press your action key when the ball is near your paddle",
+        init: (g, side) => {
+          g.players[side].actionPulseAt = 0;
+        },
+        tick: (g, side) => {
+          const inbound = side === "L" ? g.ball.vx < -80 : g.ball.vx > 80;
+          const near = side === "L" ? g.ball.x < cfg.w * 0.28 : g.ball.x > cfg.w * 0.72;
+          const prompt = inbound && near;
+          if (prompt && g.players[side].actionPulseAt === 0) {
+            g.players[side].actionPulseAt = performance.now();
+          }
+          if (!prompt) g.players[side].actionPulseAt = 0;
+        },
+        onAction: (g, side) => {
+          const paddle = side === "L" ? g.left : g.right;
+          const ok =
+            g.players[side].actionPulseAt > 0 &&
+            (side === "L" ? g.ball.vx < -80 && g.ball.x < cfg.w * 0.24 : g.ball.vx > 80 && g.ball.x > cfg.w * 0.76) &&
+            Math.abs(g.ball.y - (paddle.y + cfg.paddleH / 2)) < 110;
+          return ok;
+        },
+      },
+      {
+        id: "movingGate",
+        title: "Gate Shot",
+        text: "Send the ball through your moving gate at mid-court",
+        init: (g, side) => {
+          g.players[side].gate = {
+            x: cfg.w / 2,
+            y: 110 + Math.random() * (cfg.h - 220),
+            h: 92,
+            vy: (Math.random() < 0.5 ? -1 : 1) * (120 + Math.random() * 60),
+          };
+        },
+        tick: (g, side, dt) => {
+          const gate = g.players[side].gate;
+          if (!gate) return;
+          gate.y += gate.vy * dt;
+          if (gate.y < 80) {
+            gate.y = 80;
+            gate.vy *= -1;
+          }
+          if (gate.y > cfg.h - 80 - gate.h) {
+            gate.y = cfg.h - 80 - gate.h;
+            gate.vy *= -1;
+          }
+        },
+        onBallCrossMid: (g, side) => {
+          const gate = g.players[side].gate;
+          if (!gate) return false;
+          return g.ball.y > gate.y && g.ball.y < gate.y + gate.h;
+        },
+      },
+      {
+        id: "wallTrick",
+        title: "Wall Trick",
+        text: "Bounce off a wall before the opponent returns it",
+        init: (g, side) => {
+          g.players[side].lastWallBounceAt = 0;
+        },
+        onWallBounce: (g, side) => {
+          g.players[side].lastWallBounceAt = performance.now();
+        },
+        onOpponentHit: (g, side) => {
+          const now = performance.now();
+          return g.players[side].lastWallBounceAt > 0 && now - g.players[side].lastWallBounceAt < 1600;
+        },
+      },
+      {
+        id: "stillHands",
+        title: "Still Hands",
+        text: "For 2s, don't press movement keys while rally continues",
+        init: (g, side) => {
+          g.players[side].stillTime = 0;
+        },
+        tick: (g, side, dt, keys) => {
+          const moving = keys.up || keys.down;
+          const rallyOn = Math.abs(g.ball.vx) > 1;
+          if (rallyOn && !moving) g.players[side].stillTime += dt;
+          if (moving) g.players[side].stillTime = 0;
+        },
+        check: (g, side) => g.players[side].stillTime >= 2,
+      },
+    ],
+    [cfg.h, cfg.w]
+  );
+
+  const pickNextChallenge = (g, side) => {
+    const prevId = g.players[side].challenge?.id;
+    const options = challengePool.filter((c) => c.id !== prevId);
+    const next = options[Math.floor(Math.random() * options.length)];
+    g.players[side].challenge = next;
+    g.players[side].challengeDone = false;
+    g.players[side].challengeStartedAt = performance.now();
+    next?.init?.(g, side);
+    setHintForSide(side, `Challenge: ${next.title} — ${next.text}`);
+  };
+
+  const awardChallengeReward = (g, side) => {
+    const order = ["dash", "gravityWell", "decoyBall", "parry"];
+    const powerups = g.players[side].powerups;
+    const locked = order.find((k) => !powerups[k].unlocked);
+    if (locked) {
+      powerups[locked].unlocked = true;
+      powerups[locked].charges = 1;
+      setHintForSide(side, `Unlocked: ${powerups[locked].name}`);
+      return;
+    }
+
+    const candidates = order.filter((k) => powerups[k].charges < cfg.powerupChargeMax);
+    if (candidates.length) {
+      const k = candidates[Math.floor(Math.random() * candidates.length)];
+      powerups[k].charges += 1;
+      setHintForSide(side, `Challenge complete! +1 ${powerups[k].name} charge (x${powerups[k].charges}).`);
+    } else {
+      setHintForSide(side, "Challenge complete! All charges full.");
+    }
+  };
+
+  const handleAction = (g, side) => {
+    if (!g) return;
+    const ok = g.players[side].challenge?.onAction?.(g, side);
+    if (ok) {
+      g.players[side].challengeDone = true;
+      awardChallengeReward(g, side);
+      setTimeout(() => {
+        const gg = gRef.current;
+        if (gg && !gg.winner) pickNextChallenge(gg, side);
+      }, 650);
+    }
+  };
+
+  const tryActivatePowerup = (g, side, key) => {
+    if (!g) return;
+    const now = performance.now();
+    const entries = Object.entries(g.players[side].powerups);
+    const found = entries.find(([, p]) => p.key === key);
+    if (!found) return;
+    const [id, p] = found;
+
+    if (!p.unlocked) {
+      setHintForSide(side, `Locked: ${p.name} — complete challenges to unlock.`);
+      return;
+    }
+    if (p.charges <= 0) {
+      setHintForSide(side, `No charges: ${p.name} — complete challenges to earn charges.`);
+      return;
+    }
+    if (now < p.cooldownUntil) {
+      setHintForSide(side, `${p.name} cooling down…`);
+      return;
+    }
+
+    p.charges -= 1;
+
+    if (id === "dash") {
+      const paddle = side === "L" ? g.left : g.right;
+      const input = side === "L" ? inputP1Ref.current : inputP2Ref.current;
+      const towardBall = Math.sign(g.ball.y - (paddle.y + cfg.paddleH / 2));
+      const dir = input.up ? -1 : input.down ? 1 : towardBall || 1;
+      const dist = 130;
+      paddle.y = clamp(paddle.y + dir * dist, 12, cfg.h - 12 - cfg.paddleH);
+      p.cooldownUntil = now + 1800;
+      setHintForSide(side, "Dash! (instant reposition)");
+    }
+
+    if (id === "gravityWell") {
+      g.gravity = {
+        x: cfg.w / 2,
+        y: clamp(g.ball.y, 80, cfg.h - 80),
+        until: now + 5200,
+        strength: 520,
+      };
+      p.cooldownUntil = now + 6500;
+      setHintForSide(side, "Gravity Well deployed.");
+    }
+
+    if (id === "decoyBall") {
+      g.ghostBall = {
+        x: g.ball.x,
+        y: g.ball.y,
+        vx: g.ball.vx,
+        vy: g.ball.vy * (Math.random() < 0.5 ? 0.7 : 1.3),
+        until: now + 4200,
+      };
+      p.cooldownUntil = now + 7000;
+      setHintForSide(side, "Decoy Ball active.");
+    }
+
+    if (id === "parry") {
+      g.players[side].parryWindowUntil = now + 950;
+      p.cooldownUntil = now + 4200;
+      setHintForSide(side, "Parry window opened!");
+    }
+  };
+
+  const buildPlayersView = (g) => ({
+    L: {
+      powerups: g.players.L.powerups,
+      challengeId: g.players.L.challenge?.id || null,
+      actionPulseAt: g.players.L.actionPulseAt,
+      gate: g.players.L.gate,
+      parryWindowUntil: g.players.L.parryWindowUntil,
+    },
+    R: {
+      powerups: g.players.R.powerups,
+      challengeId: g.players.R.challenge?.id || null,
+      actionPulseAt: g.players.R.actionPulseAt,
+      gate: g.players.R.gate,
+      parryWindowUntil: g.players.R.parryWindowUntil,
+    },
+  });
+
   const makeInitial = () => {
     const midX = cfg.w / 2;
     const midY = cfg.h / 2;
@@ -109,6 +334,23 @@ function LanPong() {
     const vx = Math.cos(angle) * cfg.startBallSpeed * serveDir;
     const vy = Math.sin(angle) * cfg.startBallSpeed;
     const now = performance.now();
+    const createPowerups = () => ({
+      dash: { key: "1", name: "Dash", unlocked: false, charges: 0, cooldownUntil: 0 },
+      gravityWell: { key: "2", name: "Gravity Well", unlocked: false, charges: 0, cooldownUntil: 0 },
+      decoyBall: { key: "3", name: "Decoy Ball", unlocked: false, charges: 0, cooldownUntil: 0 },
+      parry: { key: "4", name: "Parry", unlocked: false, charges: 0, cooldownUntil: 0 },
+    });
+    const createPlayerState = () => ({
+      powerups: createPowerups(),
+      challenge: null,
+      challengeDone: false,
+      challengeStartedAt: now,
+      actionPulseAt: 0,
+      gate: null,
+      lastWallBounceAt: 0,
+      stillTime: 0,
+      parryWindowUntil: 0,
+    });
     return {
       tPrev: now,
       dtClamp: 1 / 30,
@@ -119,6 +361,10 @@ function LanPong() {
       left: { x: cfg.wallPad, y: midY - cfg.paddleH / 2, vy: 0 },
       right: { x: cfg.w - cfg.wallPad - cfg.paddleW, y: midY - cfg.paddleH / 2, vy: 0 },
       ball: { x: midX, y: midY, vx, vy },
+      players: { L: createPlayerState(), R: createPlayerState() },
+      gravity: null,
+      ghostBall: null,
+      lastHitSide: null,
     };
   };
 
@@ -131,6 +377,10 @@ function LanPong() {
       left: { y: g.left.y },
       right: { y: g.right.y },
       ball: { x: g.ball.x, y: g.ball.y, vx: g.ball.vx, vy: g.ball.vy },
+      playersView: buildPlayersView(g),
+      gravity: g.gravity,
+      ghostBall: g.ghostBall,
+      lastHitSide: g.lastHitSide,
     },
     t: Date.now(),
   });
@@ -146,6 +396,10 @@ function LanPong() {
       left: { x: cfg.wallPad, y: g.left.y, vy: 0 },
       right: { x: cfg.w - cfg.wallPad - cfg.paddleW, y: g.right.y, vy: 0 },
       ball: { x: g.ball.x, y: g.ball.y, vx: g.ball.vx, vy: g.ball.vy },
+      playersView: g.playersView,
+      gravity: g.gravity,
+      ghostBall: g.ghostBall,
+      lastHitSide: g.lastHitSide,
     };
   };
 
@@ -217,6 +471,22 @@ function LanPong() {
         return;
       }
 
+      if (msg.type === "action") {
+        if (!isHost) return;
+        const g = gRef.current;
+        if (!g) return;
+        handleAction(g, msg.from === 1 ? "L" : "R");
+        return;
+      }
+
+      if (msg.type === "powerup") {
+        if (!isHost) return;
+        const g = gRef.current;
+        if (!g) return;
+        tryActivatePowerup(g, msg.from === 1 ? "L" : "R", msg.key);
+        return;
+      }
+
       if (msg.type === "state") {
         netStateRef.current = msg;
         return;
@@ -239,10 +509,28 @@ function LanPong() {
       if (player === 1) {
         if (k === "w" || k === "W") keysRef.current.up = true;
         if (k === "s" || k === "S") keysRef.current.down = true;
+        if (k === "e" || k === "E") {
+          if (isHost) handleAction(gRef.current, "L");
+          wsRef.current?.send(JSON.stringify({ type: "action", from: 1 }));
+        }
+        if (["1", "2", "3", "4"].includes(k)) {
+          if (isHost) tryActivatePowerup(gRef.current, "L", k);
+          wsRef.current?.send(JSON.stringify({ type: "powerup", from: 1, key: k }));
+        }
       }
       if (player === 2) {
         if (k === "ArrowUp") keysRef.current.up = true;
         if (k === "ArrowDown") keysRef.current.down = true;
+        if (k === "/") {
+          if (isHost) handleAction(gRef.current, "R");
+          wsRef.current?.send(JSON.stringify({ type: "action", from: 2 }));
+        }
+        if (["7", "8", "9", "0"].includes(k)) {
+          const map = { "7": "1", "8": "2", "9": "3", "0": "4" };
+          const key = map[k];
+          if (isHost) tryActivatePowerup(gRef.current, "R", key);
+          wsRef.current?.send(JSON.stringify({ type: "powerup", from: 2, key }));
+        }
       }
     };
     const onKeyUp = (e) => {
@@ -262,7 +550,7 @@ function LanPong() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [player]);
+  }, [isHost, player]);
 
   // Send input state at ~30Hz or on change
   useEffect(() => {
@@ -309,9 +597,93 @@ function LanPong() {
       const speed = cfg.startBallSpeed;
       g.ball.vx = Math.cos(angleBase) * speed * dir;
       g.ball.vy = Math.sin(angleBase) * speed;
+      g.gravity = null;
+      g.ghostBall = null;
+      g.players.L.parryWindowUntil = 0;
+      g.players.R.parryWindowUntil = 0;
+    };
+
+    const roundRect = (x, y, w, h, r) => {
+      const rr = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + rr, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rr);
+      ctx.arcTo(x + w, y + h, x, y + h, rr);
+      ctx.arcTo(x, y + h, x, y, rr);
+      ctx.arcTo(x, y, x + w, y, rr);
+      ctx.closePath();
+    };
+
+    const drawHUD = (g, playersView) => {
+      if (!playersView) return;
+      const now = performance.now();
+      const order = ["dash", "gravityWell", "decoyBall", "parry"];
+      const w = 160;
+      const h = 24;
+
+      const drawSide = (side, x, align) => {
+        let y = 18;
+        for (const id of order) {
+          const p = playersView[side]?.powerups?.[id];
+          if (!p) continue;
+          const locked = !p.unlocked;
+          const cooling = now < p.cooldownUntil;
+          const charges = p.charges;
+
+          ctx.fillStyle = locked ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.10)";
+          ctx.strokeStyle = locked ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.16)";
+          ctx.lineWidth = 1;
+          roundRect(x, y, w, h, 10);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = locked ? "rgba(231,236,255,0.35)" : "rgba(231,236,255,0.92)";
+          ctx.font = "700 11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+          ctx.textAlign = align;
+          const label = side === "R"
+            ? `${p.name} ${p.key === "1" ? "7" : p.key === "2" ? "8" : p.key === "3" ? "9" : "0"}`
+            : `${p.key} ${p.name}`;
+          ctx.fillText(label, align === "left" ? x + 8 : x + w - 8, y + 16);
+
+          ctx.font = "600 11px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+          if (locked) {
+            ctx.fillStyle = "rgba(231,236,255,0.35)";
+            ctx.fillText("LOCKED", align === "left" ? x + w - 8 : x + 8, y + 16);
+          } else if (cooling) {
+            ctx.fillStyle = "rgba(231,236,255,0.7)";
+            const secs = Math.max(0, (p.cooldownUntil - now) / 1000);
+            ctx.fillText(`${secs.toFixed(1)}s`, align === "left" ? x + w - 8 : x + 8, y + 16);
+          } else {
+            ctx.fillStyle = charges > 0 ? "rgba(231,236,255,0.9)" : "rgba(231,236,255,0.55)";
+            ctx.fillText(`x${charges}`, align === "left" ? x + w - 8 : x + 8, y + 16);
+          }
+
+          y += h + 6;
+        }
+      };
+
+      drawSide("L", 18, "left");
+      drawSide("R", cfg.w - 18 - w, "right");
+
+      if (playersView.L.challengeId === "actionTiming" && playersView.L.actionPulseAt > 0) {
+        ctx.fillStyle = "rgba(231,236,255,0.9)";
+        ctx.font = "900 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+        ctx.textAlign = "center";
+        ctx.fillText("PRESS E", cfg.w * 0.2, cfg.h * 0.18);
+      }
+      if (playersView.R.challengeId === "actionTiming" && playersView.R.actionPulseAt > 0) {
+        ctx.fillStyle = "rgba(231,236,255,0.9)";
+        ctx.font = "900 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+        ctx.textAlign = "center";
+        ctx.fillText("PRESS /", cfg.w * 0.8, cfg.h * 0.18);
+      }
     };
 
     const updateHost = (g, dt) => {
+      const now = performance.now();
+      if (!g.players.L.challenge) pickNextChallenge(g, "L");
+      if (!g.players.R.challenge) pickNextChallenge(g, "R");
+
       g.matchTime += dt;
 
       // Inputs
@@ -329,9 +701,19 @@ function LanPong() {
       g.left.y = clamp(g.left.y + leftDir * cfg.paddleSpeed * dt, 12, cfg.h - 12 - cfg.paddleH);
       g.right.y = clamp(g.right.y + rightDir * cfg.paddleSpeed * dt, 12, cfg.h - 12 - cfg.paddleH);
 
+      g.players.L.challenge?.tick?.(g, "L", dt, i1);
+      g.players.R.challenge?.tick?.(g, "R", dt, i2);
+
+      const prevX = g.ball.x;
+
       // Ball integrate
       g.ball.x += g.ball.vx * dt;
       g.ball.y += g.ball.vy * dt;
+
+      if (g.ghostBall && now < g.ghostBall.until) {
+        g.ghostBall.x += g.ghostBall.vx * dt;
+        g.ghostBall.y += g.ghostBall.vy * dt;
+      }
 
       // Speed ramp
       const sp = Math.hypot(g.ball.vx, g.ball.vy);
@@ -347,8 +729,25 @@ function LanPong() {
       // Walls
       const topWall = 12 + cfg.ballR;
       const botWall = cfg.h - 12 - cfg.ballR;
-      if (g.ball.y < topWall) { g.ball.y = topWall; g.ball.vy *= -1; }
-      if (g.ball.y > botWall) { g.ball.y = botWall; g.ball.vy *= -1; }
+      const bouncedMain =
+        (g.ball.y < topWall && (g.ball.y = topWall, g.ball.vy *= -1, true)) ||
+        (g.ball.y > botWall && (g.ball.y = botWall, g.ball.vy *= -1, true));
+      if (bouncedMain && g.lastHitSide) {
+        g.players[g.lastHitSide].challenge?.onWallBounce?.(g, g.lastHitSide);
+      }
+      if (g.ghostBall && now < g.ghostBall.until) {
+        if (g.ghostBall.y < topWall) { g.ghostBall.y = topWall; g.ghostBall.vy *= -1; }
+        if (g.ghostBall.y > botWall) { g.ghostBall.y = botWall; g.ghostBall.vy *= -1; }
+      }
+
+      if (g.gravity && now < g.gravity.until) {
+        const dx = g.gravity.x - g.ball.x;
+        const dy = g.gravity.y - g.ball.y;
+        const dist = Math.max(60, Math.hypot(dx, dy));
+        const pull = (g.gravity.strength / dist) * dt;
+        g.ball.vy += dy * pull * 0.012;
+        g.ball.vx += dx * pull * 0.006;
+      }
 
       // Paddle collisions
       const hit = (p, isLeft) => {
@@ -371,25 +770,89 @@ function LanPong() {
         const center = py + cfg.paddleH / 2;
         const off = (g.ball.y - center) / (cfg.paddleH / 2);
         g.ball.vy += off * 240;
+        const side = isLeft ? "L" : "R";
+        g.lastHitSide = side;
+        if (now < g.players[side].parryWindowUntil) {
+          g.ball.vx *= 1.12;
+          g.ball.vy *= 1.06;
+          g.ball.vy += off * 220;
+          g.players[side].parryWindowUntil = 0;
+        }
+        const opponentSide = isLeft ? "R" : "L";
+        const ok = g.players[opponentSide].challenge?.onOpponentHit?.(g, opponentSide);
+        if (ok) g.players[opponentSide].challengeDone = true;
         return true;
       };
 
       hit(g.left, true);
       hit(g.right, false);
 
+      if (
+        (g.ball.vx > 0 && prevX < cfg.w / 2 && g.ball.x >= cfg.w / 2) ||
+        (g.ball.vx < 0 && prevX > cfg.w / 2 && g.ball.x <= cfg.w / 2)
+      ) {
+        (["L", "R"]).forEach((side) => {
+          if (g.lastHitSide === side && g.players[side].challenge?.onBallCrossMid?.(g, side)) {
+            g.players[side].challengeDone = true;
+          }
+        });
+      }
+
       // Scoring
       if (g.ball.x < -40) {
         g.scoreR += 1;
         if (g.scoreR >= cfg.scoreToWin) g.winner = "R";
         serve(g, false);
+        g.players.L.actionPulseAt = 0;
+        g.players.R.actionPulseAt = 0;
+        g.players.L.gate = null;
+        g.players.R.gate = null;
+        g.players.L.lastWallBounceAt = 0;
+        g.players.R.lastWallBounceAt = 0;
+        setTimeout(() => {
+          const gg = gRef.current;
+          if (gg && !gg.winner) {
+            pickNextChallenge(gg, "L");
+            pickNextChallenge(gg, "R");
+          }
+        }, 450);
       } else if (g.ball.x > cfg.w + 40) {
         g.scoreL += 1;
         if (g.scoreL >= cfg.scoreToWin) g.winner = "L";
         serve(g, true);
+        g.players.L.actionPulseAt = 0;
+        g.players.R.actionPulseAt = 0;
+        g.players.L.gate = null;
+        g.players.R.gate = null;
+        g.players.L.lastWallBounceAt = 0;
+        g.players.R.lastWallBounceAt = 0;
+        setTimeout(() => {
+          const gg = gRef.current;
+          if (gg && !gg.winner) {
+            pickNextChallenge(gg, "L");
+            pickNextChallenge(gg, "R");
+          }
+        }, 450);
       }
+
+      (["L", "R"]).forEach((side) => {
+        if (!g.players[side].challengeDone && g.players[side].challenge?.check?.(g, side)) {
+          g.players[side].challengeDone = true;
+        }
+        if (g.players[side].challengeDone) {
+          g.players[side].challengeDone = false;
+          awardChallengeReward(g, side);
+          setTimeout(() => {
+            const gg = gRef.current;
+            if (gg && !gg.winner) pickNextChallenge(gg, side);
+          }, 650);
+        }
+      });
     };
 
     const draw = (g, overlayText = "") => {
+      const playersView = g.playersView || (g.players ? buildPlayersView(g) : null);
+      const now = performance.now();
       // background
       ctx.clearRect(0, 0, cfg.w, cfg.h);
       ctx.fillStyle = cfg.bg;
@@ -405,12 +868,64 @@ function LanPong() {
       ctx.stroke();
       ctx.setLineDash([]);
 
+      if (playersView?.L?.gate && playersView?.L?.challengeId === "movingGate") {
+        ctx.strokeStyle = "rgba(231,236,255,0.35)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(playersView.L.gate.x, playersView.L.gate.y);
+        ctx.lineTo(playersView.L.gate.x, playersView.L.gate.y + playersView.L.gate.h);
+        ctx.stroke();
+      }
+      if (playersView?.R?.gate && playersView?.R?.challengeId === "movingGate") {
+        ctx.strokeStyle = "rgba(231,236,255,0.18)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(playersView.R.gate.x, playersView.R.gate.y);
+        ctx.lineTo(playersView.R.gate.x, playersView.R.gate.y + playersView.R.gate.h);
+        ctx.stroke();
+      }
+
+      if (g.gravity && now < g.gravity.until) {
+        ctx.strokeStyle = "rgba(231,236,255,0.35)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(g.gravity.x, g.gravity.y, 42, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(231,236,255,0.18)";
+        ctx.beginPath();
+        ctx.arc(g.gravity.x, g.gravity.y, 72, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
       // paddles
       ctx.fillStyle = "#e7ecff";
       ctx.fillRect(g.left.x, g.left.y, cfg.paddleW, cfg.paddleH);
       ctx.fillRect(g.right.x, g.right.y, cfg.paddleW, cfg.paddleH);
 
+      if (playersView?.L?.parryWindowUntil && now < playersView.L.parryWindowUntil) {
+        ctx.strokeStyle = "rgba(231,236,255,0.45)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(g.left.x + cfg.paddleW / 2, g.left.y + cfg.paddleH / 2, 36, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (playersView?.R?.parryWindowUntil && now < playersView.R.parryWindowUntil) {
+        ctx.strokeStyle = "rgba(231,236,255,0.45)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(g.right.x + cfg.paddleW / 2, g.right.y + cfg.paddleH / 2, 36, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      if (g.ghostBall && now < g.ghostBall.until) {
+        ctx.fillStyle = "rgba(231,236,255,0.22)";
+        ctx.beginPath();
+        ctx.arc(g.ghostBall.x, g.ghostBall.y, cfg.ballR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
       // ball
+      ctx.fillStyle = "#e7ecff";
       ctx.beginPath();
       ctx.arc(g.ball.x, g.ball.y, cfg.ballR, 0, Math.PI * 2);
       ctx.fill();
@@ -427,6 +942,8 @@ function LanPong() {
       ctx.font = "600 14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
       ctx.textAlign = "left";
       ctx.fillText(overlayText, 18, cfg.h - 16);
+
+      drawHUD(g, playersView);
 
       if (pausedRef.current) {
         ctx.fillStyle = "rgba(0,0,0,0.40)";
@@ -474,7 +991,10 @@ function LanPong() {
         // broadcast state ~60fps (this loop runs ~60)
         ws.send(JSON.stringify({ type: "state", ...serializeState(g) }));
 
-        draw(g, `Room: ${room} • You: P${player} ${isHost ? "(host)" : ""} • W/S vs ↑/↓`);
+        draw(
+          g,
+          `Room: ${room} • You: P${player} ${isHost ? "(host)" : ""} • P1: W/S + E + 1-4 • P2: ↑/↓ + / + 7-0`
+        );
         return;
       }
 
@@ -489,7 +1009,7 @@ function LanPong() {
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", resize);
     };
-  }, [cfg, isHost, player, presence.p1, presence.p2, room]);
+  }, [cfg, challengePool, isHost, player, presence.p1, presence.p2, room]);
 
   const card = {
     border: "1px solid rgba(231,236,255,0.12)",
@@ -539,7 +1059,7 @@ function LanPong() {
       </div>
 
       <div style={{ marginTop: 10, opacity: 0.75, fontSize: 13 }}>
-        Controls: {player === 1 ? "W/S" : player === 2 ? "↑/↓" : "—"} • Space toggles local pause (host pauses simulation)
+        Controls: P1 W/S + E + 1-4 • P2 ↑/↓ + / + 7-0 • Space toggles local pause (host pauses simulation)
       </div>
     </div>
   );

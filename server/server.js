@@ -87,6 +87,13 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.type === "action" || msg.type === "powerup") {
+      if (room.host && room.host.readyState === 1) {
+        safeSend(room.host, { type: msg.type, from: ws.player, key: msg.key });
+      }
+      return;
+    }
+
     // Host migration: if p1 leaves, allow p2 to become host
     if (msg.type === "claim_host") {
       if (!room.host || room.host.readyState !== 1) {
