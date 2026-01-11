@@ -87,6 +87,20 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.type === "pause_toggle") {
+      if (room.host && room.host.readyState === 1) {
+        safeSend(room.host, { type: "pause_toggle", from: ws.player });
+      }
+      return;
+    }
+
+    if (msg.type === "reset") {
+      if (room.host && room.host.readyState === 1) {
+        safeSend(room.host, { type: "reset", from: ws.player });
+      }
+      return;
+    }
+
     // Host migration: if p1 leaves, allow p2 to become host
     if (msg.type === "claim_host") {
       if (!room.host || room.host.readyState !== 1) {
