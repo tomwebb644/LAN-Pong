@@ -88,6 +88,7 @@ function LanPong() {
   const [presence, setPresence] = useState({ p1: false, p2: false });
 
   const wsRef = useRef(null);
+  const isHostRef = useRef(false);
 
   // Inputs
   const keysRef = useRef({ up: false, down: false });
@@ -483,6 +484,7 @@ function LanPong() {
       if (msg.type === "role") {
         setPlayer(msg.player);
         setIsHost(!!msg.host);
+        isHostRef.current = !!msg.host;
         setHint(msg.host ? "You are host (authoritative). Waiting for Player 2…" : "Connected as guest.");
         return;
       }
@@ -500,7 +502,7 @@ function LanPong() {
 
       if (msg.type === "input") {
         // only host processes inputs from other player
-        if (!isHost) return;
+        if (!isHostRef.current) return;
         const from = msg.from;
         if (from === 1) {
           inputP1Ref.current.up = !!msg.up;
@@ -532,7 +534,7 @@ function LanPong() {
   useEffect(() => {
     const sendInstantInput = (payload) => {
       if (!player) return;
-      if (isHost) {
+      if (isHostRef.current) {
         const target = player === 1 ? inputP1Ref.current : inputP2Ref.current;
         if (payload.action) target.action = true;
         if (payload.powerupKey) target.powerupKey = payload.powerupKey;
