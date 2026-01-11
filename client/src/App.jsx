@@ -11,7 +11,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  */
 
 export default function App() {
-  const [tab, setTab] = useState("multiplayer"); // "multiplayer" | "single"
+  const [tab, setTab] = useState("single"); // "multiplayer" | "single"
   return (
     <div style={{ minHeight: "100vh", padding: 18, display: "flex", justifyContent: "center" }}>
       <div style={{ width: "100%", maxWidth: 1060 }}>
