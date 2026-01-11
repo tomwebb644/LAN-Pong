@@ -6,8 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * - Multiplayer LAN: host-authoritative simulation via WebSockets relay
  *
  * Multiplayer controls:
- * - Player 1 (left): W/S
- * - Player 2 (right): ↑/↓
+ * - Each player: W/S or ↑/↓
  */
 
 export default function App() {
@@ -89,6 +88,7 @@ function LanPong() {
   const [presence, setPresence] = useState({ p1: false, p2: false });
 
   const wsRef = useRef(null);
+  const isHostRef = useRef(false);
 
   // Inputs
   const keysRef = useRef({ up: false, down: false });
@@ -484,6 +484,7 @@ function LanPong() {
       if (msg.type === "role") {
         setPlayer(msg.player);
         setIsHost(!!msg.host);
+        isHostRef.current = !!msg.host;
         setHint(msg.host ? "You are host (authoritative). Waiting for Player 2…" : "Connected as guest.");
         return;
       }
@@ -501,7 +502,7 @@ function LanPong() {
 
       if (msg.type === "input") {
         // only host processes inputs from other player
-        if (!isHost) return;
+        if (!isHostRef.current) return;
         const from = msg.from;
         if (from === 1) {
           inputP1Ref.current.up = !!msg.up;
@@ -533,7 +534,7 @@ function LanPong() {
   useEffect(() => {
     const sendInstantInput = (payload) => {
       if (!player) return;
-      if (isHost) {
+      if (isHostRef.current) {
         const target = player === 1 ? inputP1Ref.current : inputP2Ref.current;
         if (payload.action) target.action = true;
         if (payload.powerupKey) target.powerupKey = payload.powerupKey;
@@ -557,24 +558,16 @@ function LanPong() {
       if (k === "1" || k === "2" || k === "3" || k === "4") {
         sendInstantInput({ powerupKey: k });
       }
-      if (player === 1) {
-        if (k === "w" || k === "W") keysRef.current.up = true;
-        if (k === "s" || k === "S") keysRef.current.down = true;
-      }
-      if (player === 2) {
-        if (k === "ArrowUp") keysRef.current.up = true;
-        if (k === "ArrowDown") keysRef.current.down = true;
+      if (player) {
+        if (k === "w" || k === "W" || k === "ArrowUp") keysRef.current.up = true;
+        if (k === "s" || k === "S" || k === "ArrowDown") keysRef.current.down = true;
       }
     };
     const onKeyUp = (e) => {
       const k = e.key;
-      if (player === 1) {
-        if (k === "w" || k === "W") keysRef.current.up = false;
-        if (k === "s" || k === "S") keysRef.current.down = false;
-      }
-      if (player === 2) {
-        if (k === "ArrowUp") keysRef.current.up = false;
-        if (k === "ArrowDown") keysRef.current.down = false;
+      if (player) {
+        if (k === "w" || k === "W" || k === "ArrowUp") keysRef.current.up = false;
+        if (k === "s" || k === "S" || k === "ArrowDown") keysRef.current.down = false;
       }
     };
     window.addEventListener("keydown", onKeyDown, { passive: false });
@@ -1033,9 +1026,12 @@ function LanPong() {
       ctx.fillText(String(g.scoreL), cfg.w * 0.43, 70);
       ctx.fillText(String(g.scoreR), cfg.w * 0.57, 70);
 
-      if (g.powerups?.L && g.powerups?.R) {
-        drawPowerups(g.powerups.L, 18, 18);
-        drawPowerups(g.powerups.R, cfg.w - 18, 18, true);
+      if (localSide && g.powerups?.L && g.powerups?.R) {
+        if (localSide === "L") {
+          drawPowerups(g.powerups.L, 18, 18);
+        } else {
+          drawPowerups(g.powerups.R, cfg.w - 18, 18, true);
+        }
       }
 
       const localChallenge = localSide ? g.challenges?.[localSide]?.current : null;
@@ -1109,7 +1105,7 @@ function LanPong() {
         // broadcast state ~60fps (this loop runs ~60)
         ws.send(JSON.stringify({ type: "state", ...serializeState(g) }));
 
-        draw(g, `Room: ${room} • You: P${player} ${isHost ? "(host)" : ""} • W/S vs ↑/↓`);
+        draw(g, `Room: ${room} • You: P${player} ${isHost ? "(host)" : ""} • Controls: W/S or ↑/↓`);
         return;
       }
 
@@ -1174,7 +1170,7 @@ function LanPong() {
       </div>
 
       <div style={{ marginTop: 10, opacity: 0.75, fontSize: 13 }}>
-        Controls: {player === 1 ? "W/S" : player === 2 ? "↑/↓" : "—"} • Action: E • Powerups: 1-4 • Space toggles local pause (host pauses simulation)
+            Controls: {player ? "W/S or ↑/↓" : "—"} • Action: E • Powerups: 1-4 • Space toggles local pause (host pauses simulation)
       </div>
     </div>
   );
