@@ -98,7 +98,6 @@ function LanPong() {
   // State: host simulates into gRef; guests render from netStateRef
   const gRef = useRef(null);
   const netStateRef = useRef(null);
-  const pausedRef = useRef(false);
   const [hint, setHint] = useState("Connect to a server and join a room.");
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -164,6 +163,9 @@ function LanPong() {
       scoreL: 0,
       scoreR: 0,
       winner: null,
+      paused: false,
+      countdownUntil: 0,
+      needsCountdown: true,
       left: { x: cfg.wallPad, y: midY - cfg.paddleH / 2, vy: 0 },
       right: { x: cfg.w - cfg.wallPad - cfg.paddleW, y: midY - cfg.paddleH / 2, vy: 0 },
       ball: { x: midX, y: midY, vx, vy },
@@ -207,6 +209,8 @@ function LanPong() {
         scoreL: g.scoreL,
         scoreR: g.scoreR,
         winner: g.winner,
+        paused: g.paused,
+        countdownMs: Math.max(0, g.countdownUntil - performance.now()),
         left: { y: g.left.y },
         right: { y: g.right.y },
         ball: { x: g.ball.x, y: g.ball.y, vx: g.ball.vx, vy: g.ball.vy },
@@ -240,6 +244,8 @@ function LanPong() {
       scoreL: g.scoreL,
       scoreR: g.scoreR,
       winner: g.winner,
+      paused: g.paused,
+      countdownMs: g.countdownMs,
       left: { x: cfg.wallPad, y: g.left.y, vy: 0 },
       right: { x: cfg.w - cfg.wallPad - cfg.paddleW, y: g.right.y, vy: 0 },
       ball: { x: g.ball.x, y: g.ball.y, vx: g.ball.vx, vy: g.ball.vy },
@@ -440,6 +446,22 @@ function LanPong() {
     }
   };
 
+  const setPausedState = (next) => {
+    const g = gRef.current;
+    if (!g) return;
+    g.paused = next;
+    g.countdownUntil = 0;
+    g.needsCountdown = true;
+  };
+
+  const restartMatch = () => {
+    const g = makeInitial();
+    g.paused = false;
+    g.needsCountdown = true;
+    g.countdownUntil = 0;
+    gRef.current = g;
+  };
+
   // WebSocket connect/disconnect
   const connect = () => {
     try {
@@ -519,6 +541,17 @@ function LanPong() {
         return;
       }
 
+      if (msg.type === "control") {
+        if (!isHostRef.current) return;
+        if (msg.action === "toggle_pause") {
+          setPausedState(!gRef.current?.paused);
+        }
+        if (msg.action === "restart") {
+          restartMatch();
+        }
+        return;
+      }
+
       if (msg.type === "state") {
         netStateRef.current = msg;
         return;
@@ -550,7 +583,24 @@ function LanPong() {
       const k = e.key;
       if (k === " " || k === "Spacebar") {
         e.preventDefault();
-        pausedRef.current = !pausedRef.current;
+        if (!player) return;
+        if (isHostRef.current) {
+          setPausedState(!gRef.current?.paused);
+        } else {
+          const ws = wsRef.current;
+          if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "control", action: "toggle_pause" }));
+        }
+        return;
+      }
+      if (k === "r" || k === "R") {
+        if (!player) return;
+        if (isHostRef.current) {
+          restartMatch();
+        } else {
+          const ws = wsRef.current;
+          if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "control", action: "restart" }));
+        }
+        return;
       }
       if (k === "e" || k === "E") {
         sendInstantInput({ action: true });
@@ -914,6 +964,9 @@ function LanPong() {
       const trail = g.trail || [];
       const particles = g.particles || [];
       const localSide = player === 1 ? "L" : player === 2 ? "R" : null;
+      const countdownMs = typeof g.countdownMs === "number"
+        ? g.countdownMs
+        : Math.max(0, (g.countdownUntil || 0) - now);
 
       ctx.clearRect(0, 0, cfg.w, cfg.h);
       ctx.fillStyle = cfg.bg;
@@ -1059,13 +1112,20 @@ function LanPong() {
         }
       }
 
-      if (pausedRef.current) {
+      if (g.paused) {
         ctx.fillStyle = "rgba(0,0,0,0.40)";
         ctx.fillRect(0, 0, cfg.w, cfg.h);
         ctx.fillStyle = "rgba(231,236,255,0.95)";
         ctx.font = "900 44px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
         ctx.textAlign = "center";
         ctx.fillText("PAUSED", cfg.w / 2, cfg.h / 2);
+      } else if (!g.winner && countdownMs > 0) {
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillRect(0, 0, cfg.w, cfg.h);
+        ctx.fillStyle = "rgba(231,236,255,0.98)";
+        ctx.font = "900 64px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+        ctx.textAlign = "center";
+        ctx.fillText(String(Math.ceil(countdownMs / 1000)), cfg.w / 2, cfg.h / 2 + 10);
       }
       if (g.winner) {
         ctx.fillStyle = "rgba(0,0,0,0.50)";
@@ -1074,6 +1134,9 @@ function LanPong() {
         ctx.font = "900 46px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
         ctx.textAlign = "center";
         ctx.fillText(g.winner === "L" ? "LEFT WINS" : "RIGHT WINS", cfg.w / 2, cfg.h / 2);
+        ctx.font = "700 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+        ctx.fillStyle = "rgba(231,236,255,0.8)";
+        ctx.fillText("Press R to restart", cfg.w / 2, cfg.h / 2 + 44);
       }
     };
 
@@ -1096,9 +1159,23 @@ function LanPong() {
         if (!g.tPrev) g.tPrev = now;
         const dt = Math.min((now - g.tPrev) / 1000, g.dtClamp);
         g.tPrev = now;
+        const countdownMs = Math.max(0, g.countdownUntil - now);
+
+        if (!presence.p1 || !presence.p2) {
+          g.needsCountdown = true;
+          g.countdownUntil = 0;
+        }
+
+        if (g.needsCountdown && presence.p1 && presence.p2 && !g.paused && !g.winner && g.countdownUntil === 0) {
+          g.countdownUntil = now + 3000;
+          g.needsCountdown = false;
+        }
+        if (g.countdownUntil > 0 && countdownMs === 0) {
+          g.countdownUntil = 0;
+        }
 
         // only run if both players connected
-        if (presence.p1 && presence.p2 && !pausedRef.current && !g.winner) {
+        if (presence.p1 && presence.p2 && !g.paused && !g.winner && countdownMs === 0) {
           updateHost(g, dt, now);
         }
 
@@ -1170,7 +1247,7 @@ function LanPong() {
       </div>
 
       <div style={{ marginTop: 10, opacity: 0.75, fontSize: 13 }}>
-            Controls: {player ? "W/S or ↑/↓" : "—"} • Action: E • Powerups: 1-4 • Space toggles local pause (host pauses simulation)
+            Controls: {player ? "W/S or ↑/↓" : "—"} • Action: E • Powerups: 1-4 • Space pauses (either player) • R restart
       </div>
     </div>
   );
